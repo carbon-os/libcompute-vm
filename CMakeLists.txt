@@ -15,10 +15,31 @@ find_package(nlohmann_json CONFIG REQUIRED)
 add_subdirectory(ipc)
 
 add_library(compute-vm
+    # Core Dispatcher
     src/vm.cpp
+
+    # Apple Virtualization.framework Backend (VZ)
     src/vz/vz_backend.mm
+
+    # Custom Hypervisor.framework Backend (HVF)
+    src/hvf/hvf_backend.cpp
+    src/hvf/vm_context.cpp
+    src/hvf/memory.cpp
+    src/hvf/vcpu.cpp
+    src/hvf/exit_handler.cpp
+    src/hvf/fw_dtb.cpp
+    src/hvf/fw_gic.cpp
+    src/hvf/fw_psci.cpp
+    src/hvf/fw_loader.cpp
+    src/hvf/virtio_block.cpp
+    src/hvf/virtio_console.cpp
+    src/hvf/virtio_gpu.cpp
+    src/hvf/virtio_input.cpp
+    src/hvf/virtio_net.cpp
+    src/hvf/network.cpp
 )
 
+# Objective-C++ specific flags for the VZ backend
 set_source_files_properties(src/vz/vz_backend.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc"
 )
@@ -33,6 +54,7 @@ target_link_libraries(compute-vm
         ipc
         nlohmann_json::nlohmann_json
         "-framework Virtualization"
+        "-framework Hypervisor"
         "-framework Foundation"
 )
 

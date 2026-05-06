@@ -41,6 +41,36 @@ struct Args {
         }
         return std::string(fallback);
     }
+
+    // Returns all values for a repeated flag, e.g. --forward=8080:80 --forward=2222:22
+    static std::vector<std::string> get_all(int argc, char* argv[], std::string_view key) {
+        const std::string flag = "--" + std::string(key) + "=";
+        std::vector<std::string> results;
+        for (int i = 0; i < argc; ++i) {
+            std::string_view a = argv[i];
+            if (a.starts_with(flag))
+                results.emplace_back(a.substr(flag.size()));
+        }
+        return results;
+    }
+
+    static bool flag(int argc, char* argv[], std::string_view key) {
+        const std::string v = get(argc, argv, key);
+        return v == "true" || v == "1" || v == "on" || v == "";
+        // treat bare --network (empty value from flag2 path) as true
+    }
+
+    // Returns true if the bare flag (no value) is present, e.g. --network
+    static bool present(int argc, char* argv[], std::string_view key) {
+        const std::string flag2 = "--" + std::string(key);
+        const std::string flagp = "--" + std::string(key) + "=";
+        for (int i = 0; i < argc; ++i) {
+            std::string_view a = argv[i];
+            if (a == flag2 || a.starts_with(flagp))
+                return true;
+        }
+        return false;
+    }
 };
 
 // ── usage ─────────────────────────────────────────────────────────────────────
@@ -50,18 +80,52 @@ static void usage(const char* prog) {
         << "\nusage: " << prog << " run [options]\n"
         << "\n"
         << "options:\n"
-        << "  --name=<name>      VM name        (default: vm)\n"
-        << "  --cpu=<n>          vCPU count     (default: 1)\n"
-        << "  --ram=<size>       RAM size       (default: 2GB)\n"
-        << "  --disk=<size>      Disk size      (default: 20GB)\n"
-        << "  --image=<path>     Boot image     (required)\n"
-        << "  --display=<WxH>    Resolution     (e.g. 1920x1080)\n"
-        << "  --serial=<n>       Serial ports   (default: 0, logs hvc0..hvcN-1 to stderr)\n"
+        << "  --engine=<vz|hvf>  Backend engine           (default: vz)\n"
+        << "  --name=<name>      VM name                  (default: vm)\n"
+        << "  --cpu=<n>          vCPU count               (default: 1)\n"
+        << "  --ram=<size>       RAM size                 (default: 2GB)\n"
+        << "  --disk=<size>      Disk size                (default: 20GB)\n"
+        << "  --image=<path>     Boot image               (required)\n"
+        << "  --kernel=<path>    Direct Linux boot: path to vmlinuz\n"
+        << "  --initrd=<path>    Direct Linux boot: path to initramfs\n"
+        << "  --cmdline=<args>   Direct Linux boot: kernel arguments\n"
+        << "  --display=<WxH>    Resolution               (e.g. 1920x1080)\n"
+        << "  --serial=<n>       Serial ports             (default: 0)\n"
+        << "  --network          Enable NAT networking (virtio-net, 10.0.2.x)\n"
+        << "  --forward=H:G      Forward host port H to guest port G\n"
+        << "                     (requires --network, repeatable)\n"
         << "\n"
         << "the vm is destroyed automatically on exit (ctrl-c or normal close)\n"
         << "\n"
-        << "example:\n"
-        << "  vm-cli run --name=ubuntu --cpu=4 --ram=8GB --image=/images/ubuntu.img --serial=1\n";
+        << "examples:\n"
+        << "  vm-cli run --engine=hvf --name=ubuntu --cpu=4 --ram=8GB \\\n"
+        << "             --image=/images/ubuntu.img --kernel=vmlinuz --serial=1\n"
+        << "\n"
+        << "  vm-cli run --engine=hvf --name=debian --cpu=2 --ram=2GB \\\n"
+        << "             --image=/images/debian.img --kernel=vmlinuz \\\n"
+        << "             --network --forward=2222:22 --forward=8080:80\n";
+}
+
+// ── port-forward parser ───────────────────────────────────────────────────────
+
+struct PortForward { uint16_t host_port, guest_port; };
+
+static std::optional<PortForward> parse_forward(const std::string& s) {
+    const auto colon = s.find(':');
+    if (colon == std::string::npos) {
+        std::cerr << "warning: ignoring malformed --forward=" << s
+                  << " (expected H:G)\n";
+        return std::nullopt;
+    }
+    try {
+        return PortForward{
+            static_cast<uint16_t>(std::stoi(s.substr(0, colon))),
+            static_cast<uint16_t>(std::stoi(s.substr(colon + 1)))
+        };
+    } catch (...) {
+        std::cerr << "warning: ignoring malformed --forward=" << s << "\n";
+        return std::nullopt;
+    }
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -81,16 +145,31 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const std::string vm_name   = Args::get(argc, argv, "name", "vm");
-    const int         serial_n  = std::stoi(Args::get(argc, argv, "serial", "0"));
+    const std::string vm_name  = Args::get(argc, argv, "name",   "vm");
+    const std::string engine   = Args::get(argc, argv, "engine", "vz");
+    const int         serial_n = std::stoi(Args::get(argc, argv, "serial", "0"));
 
     nlohmann::json config;
+    config["engine"]    = engine;
     config["name"]      = vm_name;
     config["cpu_count"] = std::stoi(Args::get(argc, argv, "cpu",  "1"));
     config["ram_size"]  = Args::get(argc, argv, "ram",  "2GB");
     config["disk_size"] = Args::get(argc, argv, "disk", "20GB");
     config["image"]     = image;
 
+    // ── direct linux boot ─────────────────────────────────────
+    const std::string kernel = Args::get(argc, argv, "kernel");
+    if (!kernel.empty()) {
+        config["kernel"] = kernel;
+
+        const std::string initrd = Args::get(argc, argv, "initrd");
+        if (!initrd.empty()) config["initrd"] = initrd;
+
+        config["cmdline"] = Args::get(argc, argv, "cmdline",
+            "console=ttyAMA0,115200 earlycon=pl011,0x9000000 root=/dev/vda1 ro");
+    }
+
+    // ── display ───────────────────────────────────────────────
     const std::string display = Args::get(argc, argv, "display");
     if (!display.empty()) {
         const auto x = display.find('x');
@@ -102,8 +181,27 @@ int main(int argc, char* argv[]) {
         config["display"]["height"] = std::stoi(display.substr(x + 1));
     }
 
+    // ── network ───────────────────────────────────────────────
+    if (Args::present(argc, argv, "network")) {
+        config["network"]["enabled"] = true;
+
+        const auto forwards = Args::get_all(argc, argv, "forward");
+        if (!forwards.empty()) {
+            config["network"]["port_forwards"] = nlohmann::json::array();
+            for (const auto& s : forwards) {
+                if (auto pf = parse_forward(s)) {
+                    config["network"]["port_forwards"].push_back({
+                        {"host",  pf->host_port},
+                        {"guest", pf->guest_port}
+                    });
+                    std::cerr << "[net] port forward host:" << pf->host_port
+                              << " -> guest:" << pf->guest_port << "\n";
+                }
+            }
+        }
+    }
+
     // ── serial config ─────────────────────────────────────────
-    // channel names are <vm_name>-serial-<port>
     std::vector<std::string> serial_channels;
     if (serial_n > 0) {
         config["serial"] = nlohmann::json::array();
@@ -121,10 +219,10 @@ int main(int argc, char* argv[]) {
         std::signal(SIGINT,  on_signal);
         std::signal(SIGTERM, on_signal);
 
-        std::cerr << "vm running (handle " << handle << ") — ctrl-c to stop\n";
+        std::cerr << "vm running (handle " << handle << ", engine "
+                  << engine << ") — ctrl-c to stop\n";
 
         // ── connect serial clients ─────────────────────────────
-        // Brief wait for IPC server sockets to be created by the backend threads
         if (!serial_channels.empty())
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
@@ -142,7 +240,6 @@ int main(int argc, char* argv[]) {
                 std::cerr << "[serial:" << i << "] error: " << err.message << "\n";
             });
             client->on_message([](ipc::Message msg) {
-                // raw kernel output — write directly to stderr as-is
                 auto data = msg.binary();
                 ::write(STDERR_FILENO, data.data(), data.size());
             });

@@ -56,15 +56,38 @@ uint64_t VzBackend::Create(const nlohmann::json& config) {
     vmConfig.memorySize = ram_bytes;
 
     // ── bootloader ────────────────────────────────────────────
-    if (is_ipsw(image_path)) {
+    std::string kernel_path = config.value("kernel", "");
+    std::string initrd_path = config.value("initrd", "");
+    std::string cmdline     = config.value("cmdline", "");
+
+    if (!kernel_path.empty()) {
+        // Direct Linux Boot
+        NSString* nsKernel = [NSString stringWithUTF8String:kernel_path.c_str()];
+        VZLinuxBootLoader* bootLoader = 
+            [[VZLinuxBootLoader alloc] initWithKernelURL:[NSURL fileURLWithPath:nsKernel]];
+            
+        if (!initrd_path.empty()) {
+            NSString* nsInitrd = [NSString stringWithUTF8String:initrd_path.c_str()];
+            bootLoader.initialRamdiskURL = [NSURL fileURLWithPath:nsInitrd];
+        }
+        
+        if (!cmdline.empty()) {
+            bootLoader.commandLine = [NSString stringWithUTF8String:cmdline.c_str()];
+        }
+        
+        vmConfig.bootLoader = bootLoader;
+        
+    } else if (is_ipsw(image_path)) {
+        // IPSW macOS Boot
         NSLog(@"[vz] IPSW boot not yet implemented: %s", image_path.c_str());
     } else {
+        // Fallback to EFI Boot
         VZEFIBootLoader* bootLoader = [[VZEFIBootLoader alloc] init];
 
         NSString* nsImagePath = [NSString stringWithUTF8String:image_path.c_str()];
         NSString* nvramPath   = [[nsImagePath stringByDeletingPathExtension]
                                     stringByAppendingString:@".nvram"];
-        NSURL*    nvramURL    = [NSURL fileURLWithPath:nvramPath];
+        NSURL* nvramURL    = [NSURL fileURLWithPath:nvramPath];
 
         NSFileManager* fm = [NSFileManager defaultManager];
         if ([fm fileExistsAtPath:nvramPath]) {
@@ -89,7 +112,7 @@ uint64_t VzBackend::Create(const nlohmann::json& config) {
     // ── disk image ────────────────────────────────────────────
     if (!image_path.empty()) {
         NSString* nsPath = [NSString stringWithUTF8String:image_path.c_str()];
-        NSURL*    url    = [NSURL fileURLWithPath:nsPath];
+        NSURL* url    = [NSURL fileURLWithPath:nsPath];
 
         VZDiskImageStorageDeviceAttachment* attachment =
             [[VZDiskImageStorageDeviceAttachment alloc]
@@ -125,7 +148,7 @@ uint64_t VzBackend::Create(const nlohmann::json& config) {
     }
 
     // ── network ───────────────────────────────────────────────
-    VZNATNetworkDeviceAttachment*         nat =
+    VZNATNetworkDeviceAttachment* nat =
         [[VZNATNetworkDeviceAttachment alloc] init];
     VZVirtioNetworkDeviceConfiguration* net =
         [[VZVirtioNetworkDeviceConfiguration alloc] init];

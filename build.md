@@ -78,5 +78,6 @@ Output artifacts are placed under `build/bin/` and `build/lib/`
 
 ./build/cli/vm-cli run --name=ubuntu --serial=1 --cpu=1 --ram=1GB --image=/Users/galaxy/.local/share/carbon/cloud.debian.org/debian/12/arm64/disk.img
 
+./build/cli/vm-cli run --name=ubuntu --engine=hvf --cpu=1 --ram=1GB --serial=1 --image=/Users/galaxy/.local/share/carbon/cloud.debian.org/debian/12/arm64/disk.img --kernel=/Users/galaxy/Desktop/diskimg/cmd/vmlinuz
 
 ```
