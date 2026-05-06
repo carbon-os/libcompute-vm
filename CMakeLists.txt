@@ -12,9 +12,15 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0")
 
 find_package(nlohmann_json CONFIG REQUIRED)
 
+add_subdirectory(ipc)
+
 add_library(compute-vm
     src/vm.cpp
     src/vz/vz_backend.mm
+)
+
+set_source_files_properties(src/vz/vz_backend.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc"
 )
 
 target_include_directories(compute-vm
@@ -24,6 +30,7 @@ target_include_directories(compute-vm
 
 target_link_libraries(compute-vm
     PRIVATE
+        ipc
         nlohmann_json::nlohmann_json
         "-framework Virtualization"
         "-framework Foundation"
